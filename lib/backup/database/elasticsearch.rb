@@ -4,6 +4,8 @@ module Backup
   module Database
     class Elasticsearch < Base
 
+      require 'net/http'
+
       ##
       # Elasticsearch data directory path.
       #
@@ -28,6 +30,11 @@ module Backup
       #
       attr_accessor :invoke_flush
 
+      ##
+      # Determines whether Backup should enable/disable flushing the index with
+      # Elasticsearch API before/after copying the index directory.
+      #
+      attr_accessor :disable_flushing
       ##
       # Determines whether Backup should close the index with the
       # Elasticsearch API before copying the index directory.
@@ -60,10 +67,12 @@ module Backup
         super
 
         invoke_flush! if invoke_flush
+        disable_flushing!(true) if disable_flushing
         unless backup_all?
           invoke_close! if invoke_close
         end
         copy!
+        disable_flushing!(false) if disable_flushing
 
         log!(:finished)
       end
@@ -79,6 +88,8 @@ module Backup
         request = case http_method.to_sym
         when :post
           Net::HTTP::Post.new(endpoint)
+        when :put
+          Net::HTTP::Put.new(endpoint, initheader = {'Content-Type' => 'application/json'})
         end
         request.body = body
         begin
@@ -92,6 +103,25 @@ module Backup
             Port was: #{ port }
             Endpoint was: #{ endpoint }
             Error was: #{ error.message }
+          EOS
+        end
+      end
+
+      def update_settings_endpoint
+        backup_all? ? '/_settings' : "/#{ index }/_settings"
+      end
+
+      def disable_flushing!(disable)
+        body = '{ "index" : { "translog.disable_flush" : "' + disable.to_s + '" } }'
+        response = api_request(:put, update_settings_endpoint, body)
+        unless response.code == '200'
+          raise Errors::Database::Elasticsearch::QueryError, <<-EOS
+            Could not update flush settings of the the Elasticsearch index.
+            Host was: #{ host }
+            Port was: #{ port }
+            Endpoint was: #{ update_settings_endpoint }
+            Response body was: #{ response.body }
+            Response code was: #{ response.code }
           EOS
         end
       end
